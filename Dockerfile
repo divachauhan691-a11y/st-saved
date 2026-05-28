@@ -5,7 +5,7 @@ COPY gradle gradle
 COPY build.gradle.kts .
 COPY settings.gradle.kts .
 COPY src src
-RUN ./gradlew shadowJar
+RUN chmod +x gradlew && ./gradlew shadowJar
 
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
