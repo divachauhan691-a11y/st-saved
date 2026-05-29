@@ -17,7 +17,9 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import java.io.File
@@ -42,6 +44,7 @@ class TelegramBotComponent(
     parentScope: CoroutineScope
 ) : Actor<TelegramMsg>("TelegramBot", eventBus, parentScope) {
     private val apiUrl = "https://api.telegram.org/bot$token"
+    private val uploadSemaphore = Semaphore(3)
     private val httpClient = HttpClient(OkHttp) {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         install(HttpTimeout) {
@@ -291,10 +294,20 @@ class TelegramBotComponent(
                 sendMessage(chatId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
                 val parts = splitVideo(file)
                 if (parts.isNotEmpty()) {
-                    for ((i, part) in parts.withIndex()) {
-                        val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
-                        uploadVideo(chatId, part, partCaption)
-                        part.delete()
+                    sendMessage(chatId, "⬆️ Uploading ${parts.size} parts...")
+                    coroutineScope {
+                        parts.mapIndexed { i, part ->
+                            async {
+                                uploadSemaphore.acquire()
+                                try {
+                                    val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
+                                    uploadVideo(chatId, part, partCaption)
+                                } finally {
+                                    uploadSemaphore.release()
+                                    part.delete()
+                                }
+                            }
+                        }.awaitAll()
                     }
                     sendMessage(chatId, "✅ ${parts.size} parts uploaded for ${file.name}")
                 } else {
@@ -341,28 +354,48 @@ class TelegramBotComponent(
                 input.absolutePath
             ).also { it.redirectErrorStream(true) }.start()
             val durStr = probe.inputStream.bufferedReader().readText().trim()
-            probe.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+            probe.waitFor(30, TimeUnit.SECONDS)
             val totalDur = durStr.toDoubleOrNull() ?: return listOf(input)
             val segDur = totalDur / numParts
 
             val prefix = File(input.parentFile, "${input.nameWithoutExtension}_part_")
             val pattern = "${prefix.absolutePath}%03d.mp4"
+
             val pb = ProcessBuilder(
                 "ffmpeg", "-y", "-i", input.absolutePath,
+                "-map", "0",
                 "-c", "copy", "-f", "segment",
                 "-segment_time", segDur.toString(),
                 "-reset_timestamps", "1",
-                "-avoid_negative_ts", "make_zero",
                 pattern
             )
             pb.redirectErrorStream(true)
             val proc = pb.start()
-            proc.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)
+            proc.waitFor(300, TimeUnit.SECONDS)
 
-            val parts = (0 until numParts).mapNotNull { i ->
-                val f = File(prefix.absolutePath + "%03d.mp4".format(i))
-                f.takeIf { it.exists() && it.length() > 0 }
+            var parts = input.parentFile.listFiles()
+                ?.filter { it.name.startsWith("${input.nameWithoutExtension}_part_") && it.name.endsWith(".mp4") }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+
+            if (parts.isEmpty()) return listOf(input)
+
+            for (part in parts) {
+                val tmp = File(part.parentFile, ".${part.name}.fix")
+                val fixPb = ProcessBuilder(
+                    "ffmpeg", "-y", "-i", part.absolutePath,
+                    "-map", "0", "-c", "copy",
+                    "-movflags", "+faststart",
+                    tmp.absolutePath
+                )
+                fixPb.redirectErrorStream(true)
+                if (fixPb.start().waitFor(60, TimeUnit.SECONDS) && tmp.exists() && tmp.length() > 0) {
+                    tmp.renameTo(part)
+                }
+                tmp.delete()
             }
+
+            parts = parts.filter { it.exists() && it.length() > 0 }
             return parts
         } catch (e: Exception) {
             logger.error("Split failed: ${e.message}")
