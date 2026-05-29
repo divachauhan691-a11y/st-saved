@@ -412,6 +412,19 @@ class TelegramBotComponent(
         val uploadFile = if (remuxOk) fixed else file
         if (remuxOk) logger.info("Remuxed {} for upload ({}MB)", file.name, uploadFile.length() / 1_000_000)
 
+        val thumbFile = File(file.parentFile, ".${file.name}.thumb.jpg")
+        val thumbOk = try {
+            val pb = ProcessBuilder(
+                "ffmpeg", "-y", "-i", uploadFile.absolutePath,
+                "-vf", "select=eq(n\\,0)", "-vframes", "1",
+                "-q:v", "2",
+                thumbFile.absolutePath
+            )
+            pb.redirectErrorStream(true)
+            pb.start().waitFor(30, TimeUnit.SECONDS) && thumbFile.exists() && thumbFile.length() > 0
+        } catch (_: Exception) { false }
+        if (thumbOk) logger.info("Thumbnail extracted: {} ({}KB)", thumbFile.name, thumbFile.length() / 1024)
+
         val boundary = "----" + System.currentTimeMillis()
         val url = URL("$apiUrl/sendVideo")
         val conn = url.openConnection() as HttpURLConnection
@@ -438,6 +451,14 @@ class TelegramBotComponent(
             os.write("Content-Disposition: form-data; name=\"supports_streaming\"$crlf$crlf".toByteArray())
             os.write("true$crlf".toByteArray())
 
+            if (thumbOk) {
+                os.write("--$boundary$crlf".toByteArray())
+                os.write("Content-Disposition: form-data; name=\"thumbnail\"; filename=\"thumb.jpg\"$crlf".toByteArray())
+                os.write("Content-Type: image/jpeg$crlf$crlf".toByteArray())
+                thumbFile.inputStream().use { input -> input.copyTo(os, 65536) }
+                os.write(crlf.toByteArray())
+            }
+
             os.write("--$boundary$crlf".toByteArray())
             os.write("Content-Disposition: form-data; name=\"video\"; filename=\"${file.name}\"$crlf".toByteArray())
             os.write("Content-Type: video/mp4$crlf$crlf".toByteArray())
@@ -462,6 +483,7 @@ class TelegramBotComponent(
         } finally {
             conn.disconnect()
             if (remuxOk) fixed.delete()
+            if (thumbOk) thumbFile.delete()
         }
     }
 
