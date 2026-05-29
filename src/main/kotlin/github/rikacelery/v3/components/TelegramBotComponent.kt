@@ -397,20 +397,22 @@ class TelegramBotComponent(
     }
 
     private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) = withContext(Dispatchers.IO) {
-        // Remux with +faststart to fix metadata / duration glitch
+        // Re-encode to H.264 AAC for Telegram streaming compatibility
         val fixed = File(file.parentFile, ".${file.name}.fixed.mp4")
         val remuxOk = try {
             val pb = ProcessBuilder(
                 "ffmpeg", "-y", "-i", file.absolutePath,
-                "-c", "copy", "-movflags", "+faststart",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
                 fixed.absolutePath
             )
             pb.redirectErrorStream(true)
             val proc = pb.start()
-            proc.waitFor(60, TimeUnit.SECONDS) && fixed.exists() && fixed.length() > 0
+            proc.waitFor(180, TimeUnit.SECONDS) && fixed.exists() && fixed.length() > 0
         } catch (_: Exception) { false }
         val uploadFile = if (remuxOk) fixed else file
-        if (remuxOk) logger.info("Remuxed {} -> fixed.mp4 ({}MB)", file.name, uploadFile.length() / 1_000_000)
+        if (remuxOk) logger.info("Re-encoded {} -> H.264 ({}MB)", file.name, uploadFile.length() / 1_000_000)
 
         val boundary = "----" + System.currentTimeMillis()
         val url = URL("$apiUrl/sendVideo")
