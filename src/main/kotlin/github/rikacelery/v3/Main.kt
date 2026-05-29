@@ -9,6 +9,7 @@ import github.rikacelery.v3.core.RequestBus
 import github.rikacelery.v3.data.SystemConfig
 import github.rikacelery.v3.hooks.EventHook
 import github.rikacelery.v3.m3u8.M3u8Parser
+import github.rikacelery.v3.storage.MongoStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
@@ -90,12 +91,16 @@ fun main(vararg args: String) {
             })
 
 
-            // 2. Components
+            // 2. Storage
+            val mongoUri = System.getenv("MONGODB_URI") ?: ""
+            val mongo = MongoStore(mongoUri)
+
+            // 3. Components
             val metricComponent = MetricComponent(eventBus, appScope)
             val configComponent = ConfigComponent(config, eventBus, appScope)
-            val authComponent = AuthComponent(cli.getOptionValue("users", "users.txt"), eventBus, appScope)
+            val authComponent = AuthComponent(cli.getOptionValue("users", "users.txt"), eventBus, appScope, mongo)
             val roomComponent =
-                RoomComponent(ApiClient, config.listConfPath, config.platformHost, requestBus, eventBus, appScope)
+                RoomComponent(ApiClient, config.listConfPath, config.platformHost, requestBus, eventBus, appScope, mongo)
             val liveEventSource = LiveEventSource(config.authToken, eventBus, appScope)
 
             val downloaderComponent = DownloaderComponent(
@@ -141,7 +146,7 @@ fun main(vararg args: String) {
                 parentScope = appScope
             )
 
-            // 3. Start all Actors
+            // 4. Start all Actors
             configComponent.start()
             authComponent.start()
             roomComponent.start()
@@ -154,15 +159,29 @@ fun main(vararg args: String) {
             schedulerComponent.start()
             telegramBot.start()
 
-            // 4. Bootstrap: load users, processors, rooms from config files
+            // 5. Bootstrap: load users, processors, rooms from config files
             val bootstrap =
                 Bootstrap(ApiClient, roomComponent, authComponent, postProcessorComponent, schedulerComponent)
             bootstrap.initialize(args.toList())
 
-            // 5. Start HTTP server
+            // 6. Load persisted data from MongoDB (overrides file-based config)
+            if (mongo.isConnected()) {
+                val mongoRooms = mongo.loadRooms()
+                if (mongoRooms.isNotEmpty()) {
+                    roomComponent.replaceAll(mongoRooms)
+                    logger.info("Loaded ${mongoRooms.size} rooms from MongoDB")
+                }
+                val mongoUsers = mongo.loadUsers()
+                if (mongoUsers.isNotEmpty()) {
+                    authComponent.replaceAll(mongoUsers)
+                    logger.info("Loaded ${mongoUsers.size} users from MongoDB")
+                }
+            }
+
+            // 7. Start HTTP server
             val engine = httpServer.start()
 
-            // 6. Wait for shutdown
+            // 8. Wait for shutdown
             eventBus.subscribe(appScope, String::class) { msg ->
                 if (msg == "ServerShutdown") {
                     engine.stop(1000, 5000)
@@ -170,7 +189,7 @@ fun main(vararg args: String) {
                 }
             }
 
-            // 7. Cleanup on exit
+            // 9. Cleanup on exit
             try {
                 awaitCancellation()
             } finally {
@@ -186,6 +205,7 @@ fun main(vararg args: String) {
                 authComponent.stop()
                 configComponent.stop()
                 dataChannel.close()
+                mongo.close()
                 println("XhRec v3 shut down")
             }
         }

@@ -36,6 +36,7 @@ dependencies {
     implementation("org.jsoup:jsoup:1.22.1")
     implementation("org.jline:jline:3.30.6")
     implementation("commons-cli:commons-cli:1.11.0")
+    implementation("org.mongodb:mongodb-driver-sync:5.3.1")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation(platform("org.junit:junit-bom:6.0.3"))

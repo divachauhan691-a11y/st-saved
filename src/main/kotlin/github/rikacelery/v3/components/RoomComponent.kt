@@ -10,6 +10,7 @@ import github.rikacelery.v3.data.Room
 import github.rikacelery.v3.events.*
 import github.rikacelery.v3.exceptions.DeletedException
 import github.rikacelery.v3.exceptions.RenameException
+import github.rikacelery.v3.storage.MongoStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import java.io.File
@@ -28,7 +29,8 @@ class RoomComponent(
     private val platformHost: String,
     private val requestBus: RequestBus,
     eventBus: EventBus,
-    parentScope: CoroutineScope
+    parentScope: CoroutineScope,
+    private val mongo: MongoStore = MongoStore(null)
 ) : Actor<RoomMsg>("RoomComponent", eventBus, parentScope) {
 
     private val rooms = ConcurrentHashMap<Long, Room>()
@@ -77,6 +79,7 @@ class RoomComponent(
                     saveDebounceJob = scope.launch {
                         delay(1.seconds)
                         saveListConf()
+                        persistToMongo()
                     }
                 }
                 else -> {}
@@ -229,6 +232,11 @@ class RoomComponent(
         refreshLock.unlock()
     }
 
+    fun replaceAll(list: List<Room>) {
+        this.rooms.clear()
+        list.forEach { this.rooms[it.id] = it }
+    }
+
     fun internalAdd(
         id: Long,
         name: String,
@@ -259,6 +267,14 @@ class RoomComponent(
             }
         } catch (e: Exception) {
             logger.warn("Failed to save list.conf: ${e.message}")
+        }
+    }
+
+    private suspend fun persistToMongo() {
+        try {
+            if (mongo.isConnected()) mongo.saveRooms(rooms.values.toList())
+        } catch (e: Exception) {
+            logger.warn("Failed to save rooms to MongoDB: ${e.message}")
         }
     }
 
