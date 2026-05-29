@@ -19,6 +19,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 sealed interface WriterMsg
 
@@ -107,7 +108,8 @@ class WriterComponent(
 
                 val elapsed = Duration.between(active.startTime, Instant.now()).toMillis()
                 active.segmentIndex++
-                val segName = segFileName(active.roomName, active.startTime, active.segmentIndex, elapsed)
+                val segIdx = active.segmentIndex
+                val segName = segFileName(active.roomName, active.startTime, segIdx, elapsed)
                 val segFile = File(tmpDir, segName)
                 active.file.renameTo(segFile)
 
@@ -115,10 +117,7 @@ class WriterComponent(
                 active.eventFile.renameTo(segEventFile)
                 if (segEventFile.length() == 0L) segEventFile.delete()
 
-                eventBus.publish(FileReady(active.roomId, segFile, EndReason.StreamEnd))
-                logger.info("Segment {}: {} ({}MB)", active.segmentIndex, segName, active.bytesWritten / 1_000_000)
-
-                val newPath = partPath(active.roomName, active.startTime, active.segmentIndex)
+                val newPath = partPath(active.roomName, active.startTime, segIdx)
                 val newFile = File(newPath)
                 val newEventFile = File("$newPath.event")
                 val newFos = FileOutputStream(newFile)
@@ -129,7 +128,27 @@ class WriterComponent(
                 active.fos = newFos
                 active.eventFos = newEventFos
                 active.bytesWritten = active.initBytes!!.size.toLong()
-                logger.info("Opened segment {}: {}", active.segmentIndex, newPath)
+                logger.info("Segment {} closed ({}MB), opening {}...", segIdx, active.bytesWritten / 1_000_000, newPath)
+
+                // remux closed segment asynchronously to normalize timestamps
+                val roomId = active.roomId
+                scope.launch {
+                    val remuxed = File(tmpDir, ".$segName.remux.mp4")
+                    try {
+                        val pb = ProcessBuilder(
+                            "ffmpeg", "-y", "-i", segFile.absolutePath,
+                            "-c", "copy", "-movflags", "+faststart",
+                            remuxed.absolutePath
+                        )
+                        pb.redirectErrorStream(true)
+                        if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                            remuxed.renameTo(segFile)
+                        }
+                    } catch (_: Exception) { }
+                    remuxed.delete()
+                    eventBus.publish(FileReady(roomId, segFile, EndReason.StreamEnd))
+                    logger.info("Segment {} remuxed + published: {} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
+                }
             }
 
             withContext(Dispatchers.IO) {
@@ -170,6 +189,22 @@ class WriterComponent(
                 }
 
                 hooks.forEach { it.afterFileClosed(msg.roomId, finalFile) }
+
+                // remux final segment
+                val remuxed = File(tmpDir, ".$finalName.remux.mp4")
+                try {
+                    val pb = ProcessBuilder(
+                        "ffmpeg", "-y", "-i", finalFile.absolutePath,
+                        "-c", "copy", "-movflags", "+faststart",
+                        remuxed.absolutePath
+                    )
+                    pb.redirectErrorStream(true)
+                    if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                        remuxed.renameTo(finalFile)
+                    }
+                } catch (_: Exception) { }
+                remuxed.delete()
+
                 eventBus.publish(FileReady(msg.roomId, finalFile, msg.reason))
                 logger.info("Closed file: ${finalFile.absolutePath}, reason=${msg.reason}")
             } catch (e: Exception) {
