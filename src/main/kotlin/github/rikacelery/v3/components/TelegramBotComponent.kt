@@ -315,7 +315,7 @@ class TelegramBotComponent(
         try {
             val totalSize = input.length()
             val targetSize = 42_000_000L
-            val numParts = ((totalSize + targetSize - 1) / targetSize).toInt().coerceAtMost(20)
+            val numParts = ((totalSize + targetSize - 1) / targetSize).toInt()
             if (numParts <= 1) return listOf(input)
 
             val probe = ProcessBuilder(
