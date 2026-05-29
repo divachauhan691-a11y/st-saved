@@ -42,8 +42,8 @@ class TelegramBotComponent(
     private val httpClient = HttpClient(OkHttp) {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         install(io.ktor.client.plugins.HttpTimeout) {
-            requestTimeoutMillis = 60000
-            socketTimeoutMillis = 60000
+            requestTimeoutMillis = 300000
+            socketTimeoutMillis = 300000
         }
     }
     private val pollMutex = Mutex()
@@ -303,7 +303,7 @@ class TelegramBotComponent(
             formData = formData {
                 append("chat_id", chatId)
                 append("caption", caption)
-                append("video", file.readBytes(), Headers.build {
+                append("video", File(file.absolutePath).readBytes(), Headers.build {
                     append(HttpHeaders.ContentType, "video/mp4")
                     append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
                 })
