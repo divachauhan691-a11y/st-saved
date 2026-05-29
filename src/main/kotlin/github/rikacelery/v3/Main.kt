@@ -126,6 +126,7 @@ fun main(vararg args: String) {
                 appScope,
                 mseStore,
                 outputDir = config.outputDir,
+                tmpDir = config.tmpDir,
                 publicUrl = config.publicUrl
             )
 

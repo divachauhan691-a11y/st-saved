@@ -33,6 +33,7 @@ class HttpServerComponent(
     private val scope: CoroutineScope,
     private val mseStore: MseStore = MseStore(),
     private val outputDir: File = File("out"),
+    private val tmpDir: File = File("tmp"),
     private val publicUrl: String = ""
 ) {
     private val logger = LoggerFactory.getLogger("v3.HttpServer")
@@ -322,6 +323,15 @@ class HttpServerComponent(
                     val name = call.parameters.getAll("name")?.joinToString(File.separator) ?: return@get
                     val file = File(outputDir, name).canonicalFile
                     if (!file.exists() || !file.startsWith(outputDir.canonicalFile)) {
+                        call.respondText("Not found", status = HttpStatusCode.NotFound)
+                        return@get
+                    }
+                    call.respondFile(file)
+                }
+                get("/tmpfiles/{name...}") {
+                    val name = call.parameters.getAll("name")?.joinToString(File.separator) ?: return@get
+                    val file = File(tmpDir, name).canonicalFile
+                    if (!file.exists() || !file.startsWith(tmpDir.canonicalFile)) {
                         call.respondText("Not found", status = HttpStatusCode.NotFound)
                         return@get
                     }

@@ -322,7 +322,7 @@ class TelegramBotComponent(
                                 uploadSemaphore.acquire()
                                 try {
                                     val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
-                                    uploadVideo(chatId, part, partCaption)
+                                    sendVideoUrl(chatId, part, partCaption)
                                 } finally {
                                     uploadSemaphore.release()
                                     part.delete()
@@ -335,7 +335,7 @@ class TelegramBotComponent(
                     sendMessage(chatId, "⚠️ Failed to split ${file.name}")
                 }
             } else {
-                uploadVideo(chatId, file, caption)
+                sendVideoUrl(chatId, file, caption)
             }
             logger.info("Processed {} for Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
@@ -343,21 +343,20 @@ class TelegramBotComponent(
         }
     }
 
-    private suspend fun uploadVideo(chatId: Long, file: File, caption: String) {
-        val resp = httpClient.submitFormWithBinaryData(
-            url = "$apiUrl/sendVideo",
-            formData = formData {
-                append("chat_id", chatId)
-                append("caption", caption)
-                append("video", File(file.absolutePath).readBytes(), Headers.build {
-                    append(HttpHeaders.ContentType, "video/mp4")
-                    append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
-                })
-            }
-        )
+    private suspend fun sendVideoUrl(chatId: Long, file: File, caption: String) {
+        val publicBase = publicUrl.trimEnd('/')
+        val fileUrl = "$publicBase/tmpfiles/${file.name}"
+        val resp = httpClient.post("$apiUrl/sendVideo") {
+            setBody(buildJsonObject {
+                put("chat_id", chatId)
+                put("video", fileUrl)
+                put("caption", caption)
+            })
+            contentType(ContentType.Application.Json)
+        }
         if (!resp.status.isSuccess()) {
             val body = resp.bodyAsText()
-            logger.error("Telegram sendVideo returned ${resp.status}: $body")
+            logger.error("Telegram sendVideo URL returned ${resp.status}: $body")
         }
     }
 
