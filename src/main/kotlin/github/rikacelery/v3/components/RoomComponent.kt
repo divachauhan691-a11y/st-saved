@@ -35,6 +35,8 @@ class RoomComponent(
     private var ready = false
     private var saveDebounceJob: Job? = null
     @Volatile private var stopRefresh = false
+    // Track pending deletions — only remove after 2 consecutive failures
+    private val pendingDelete = ConcurrentHashMap.newKeySet<Long>()
 
     suspend fun setReady() {
         tell(RefreshRooms)
@@ -200,15 +202,26 @@ class RoomComponent(
                     eventBus.publish(RoomStatusChanged(room.id, oldStatus, status))
                     logger.debug("refreshAll: room {} status {} -> {}", room.id, oldStatus, status)
                 }
+                // fetch succeeded — clear any pending deletion
+                pendingDelete.remove(room.id)
             } catch (e: RenameException) {
                 val oldName = room.name
                 rooms[room.id] = room.copy(name = e.newName)
                 eventBus.publish(RoomRenamed(room.id, oldName, e.newName))
                 logger.info("Room ${room.id} renamed: $oldName -> ${e.newName}")
+                pendingDelete.remove(room.id)
             } catch (_: DeletedException) {
-                rooms.remove(room.id)
-                eventBus.publish(RoomRemoved(room.id, room.name))
-                logger.info("Room ${room.id} deleted: ${room.name}")
+                if (pendingDelete.contains(room.id)) {
+                    // second consecutive failure — remove
+                    rooms.remove(room.id)
+                    pendingDelete.remove(room.id)
+                    eventBus.publish(RoomRemoved(room.id, room.name))
+                    logger.info("Room ${room.id} deleted (confirmed): ${room.name}")
+                } else {
+                    // first failure — mark pending, keep room
+                    pendingDelete.add(room.id)
+                    logger.warn("Room ${room.id} API returned deleted, pending confirmation...")
+                }
             } catch (e: Exception) {
                 logger.warn("refreshAll error room ${room.id}: ${e.message}")
             }

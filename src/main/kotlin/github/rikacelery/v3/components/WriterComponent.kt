@@ -164,54 +164,49 @@ class WriterComponent(
 
     private suspend fun handleStreamEnd(msg: StreamEnd) {
         val active = files.remove(msg.roomId) ?: return
-        withContext(NonCancellable) {
-            try {
-                if (active.bytesWritten < 1024) {
-                    active.dispose()
-                    return@withContext
-                }
-                active.fos.close()
-                active.eventFos.close()
-
-                val elapsed = Duration.between(active.startTime, Instant.now()).toMillis()
-                val finalName = segFileName(active.roomName, active.startTime, active.segmentIndex, elapsed)
-                val finalFile = File(tmpDir, finalName)
-                active.file.renameTo(finalFile)
-
-                val finalEvent = File(tmpDir, "$finalName.event")
-                active.eventFile.renameTo(finalEvent)
-                if (finalEvent.length() == 0L) finalEvent.delete()
-
-                if (finalFile.length() == 0L) {
-                    finalFile.delete()
-                    logger.info("Remove empty file: ${finalFile.absolutePath}, reason=${msg.reason}")
-                    return@withContext
-                }
-
-                hooks.forEach { it.afterFileClosed(msg.roomId, finalFile) }
-
-                // remux final segment
-                val remuxed = File(tmpDir, ".$finalName.remux.mp4")
-                try {
-                    val pb = ProcessBuilder(
-                        "ffmpeg", "-y", "-i", finalFile.absolutePath,
-                        "-c", "copy", "-movflags", "+faststart",
-                        remuxed.absolutePath
-                    )
-                    pb.redirectErrorStream(true)
-                    if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
-                        remuxed.renameTo(finalFile)
-                    }
-                } catch (_: Exception) { }
-                remuxed.delete()
-
-                eventBus.publish(FileReady(msg.roomId, finalFile, msg.reason))
-                logger.info("Closed file: ${finalFile.absolutePath}, reason=${msg.reason}")
-            } catch (e: Exception) {
-                logger.error("Failed to close file for room ${msg.roomId}: ${e.message}", e)
-                eventBus.publish(WriterFatal(msg.roomId, e.message ?: "Unknown error"))
+        // quick close — never block here
+        val segIdx = active.segmentIndex
+        val roomId = active.roomId
+        val roomName = active.roomName
+        val startTime = active.startTime
+        try {
+            if (active.bytesWritten < 1024) {
                 active.dispose()
+                return
             }
+            active.fos.close()
+            active.eventFos.close()
+        } catch (e: Exception) {
+            active.dispose()
+            return
+        }
+        val elapsed = Duration.between(startTime, Instant.now()).toMillis()
+        val finalName = segFileName(roomName, startTime, segIdx, elapsed)
+        val finalFile = File(tmpDir, finalName)
+        active.file.renameTo(finalFile)
+        val finalEvent = File(tmpDir, "$finalName.event")
+        active.eventFile.renameTo(finalEvent)
+        if (finalEvent.length() == 0L) finalEvent.delete()
+        if (finalFile.length() == 0L) { finalFile.delete(); return }
+        hooks.forEach { it.afterFileClosed(roomId, finalFile) }
+
+        // remux + publish async
+        scope.launch {
+            val remuxed = File(tmpDir, ".$finalName.remux.mp4")
+            try {
+                val pb = ProcessBuilder(
+                    "ffmpeg", "-y", "-i", finalFile.absolutePath,
+                    "-c", "copy", "-movflags", "+faststart",
+                    remuxed.absolutePath
+                )
+                pb.redirectErrorStream(true)
+                if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                    remuxed.renameTo(finalFile)
+                }
+            } catch (_: Exception) { }
+            remuxed.delete()
+            eventBus.publish(FileReady(roomId, finalFile, msg.reason))
+            logger.info("Closed + remuxed: ${finalFile.absolutePath}, reason=${msg.reason}")
         }
     }
 

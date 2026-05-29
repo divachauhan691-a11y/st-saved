@@ -397,22 +397,20 @@ class TelegramBotComponent(
     }
 
     private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) = withContext(Dispatchers.IO) {
-        // Re-encode to H.264 AAC for Telegram streaming compatibility
+        // Remux with +faststart for moov-at-front (WriterComponent already does this,
+        // but do it here too in case Writer remux was skipped)
         val fixed = File(file.parentFile, ".${file.name}.fixed.mp4")
         val remuxOk = try {
             val pb = ProcessBuilder(
                 "ffmpeg", "-y", "-i", file.absolutePath,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-                "-c:a", "aac", "-b:a", "96k",
-                "-movflags", "+faststart",
+                "-c", "copy", "-movflags", "+faststart",
                 fixed.absolutePath
             )
             pb.redirectErrorStream(true)
-            val proc = pb.start()
-            proc.waitFor(180, TimeUnit.SECONDS) && fixed.exists() && fixed.length() > 0
+            pb.start().waitFor(60, TimeUnit.SECONDS) && fixed.exists() && fixed.length() > 0
         } catch (_: Exception) { false }
         val uploadFile = if (remuxOk) fixed else file
-        if (remuxOk) logger.info("Re-encoded {} -> H.264 ({}MB)", file.name, uploadFile.length() / 1_000_000)
+        if (remuxOk) logger.info("Remuxed {} for upload ({}MB)", file.name, uploadFile.length() / 1_000_000)
 
         val boundary = "----" + System.currentTimeMillis()
         val url = URL("$apiUrl/sendVideo")
@@ -435,6 +433,10 @@ class TelegramBotComponent(
             os.write("--$boundary$crlf".toByteArray())
             os.write("Content-Disposition: form-data; name=\"caption\"$crlf$crlf".toByteArray())
             os.write("$caption$crlf".toByteArray())
+
+            os.write("--$boundary$crlf".toByteArray())
+            os.write("Content-Disposition: form-data; name=\"supports_streaming\"$crlf$crlf".toByteArray())
+            os.write("true$crlf".toByteArray())
 
             os.write("--$boundary$crlf".toByteArray())
             os.write("Content-Disposition: form-data; name=\"video\"; filename=\"${file.name}\"$crlf".toByteArray())
