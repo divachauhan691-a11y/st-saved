@@ -374,19 +374,19 @@ class TelegramBotComponent(
                 file.delete()
             } else {
                 var lastErr: Exception? = null
-                for (attempt in 1..3) {
+                for (attempt in 1..5) {
                     try {
                         uploadVideoDirectly(channelId, file, caption)
                         lastErr = null
                         break
                     } catch (e: Exception) {
                         lastErr = e
-                        logger.warn("Upload attempt $attempt/3 failed for {}: {}", file.name, e.message)
-                        if (attempt < 3) delay(5.seconds * attempt)
+                        logger.warn("Upload attempt $attempt/5 failed for {}: {}", file.name, e.message)
+                        if (attempt < 5) delay((5.seconds * attempt).coerceAtMost(30.seconds))
                     }
                 }
                 if (lastErr != null) {
-                    sendMessage(channelId, "⚠️ Upload failed for ${file.name} after 3 attempts")
+                    sendMessage(channelId, "⚠️ Upload failed for ${file.name} after 5 attempts")
                 } else {
                     file.delete()
                 }
@@ -454,27 +454,21 @@ class TelegramBotComponent(
     private suspend fun uploadVideoDirectly(chatId: String, file: File, caption: String) = withContext(Dispatchers.IO) {
         val thumbFile = File(file.parentFile, ".${file.name}.thumb.jpg")
         var thumbOk = false
-        try {
-            val pb = ProcessBuilder(
-                "ffmpeg", "-y", "-skip_frame", "nokey",
+        thumbOk = runFfmpegWithOutput(
+            listOf("ffmpeg", "-y", "-skip_frame", "nokey",
                 "-i", file.absolutePath,
                 "-vframes", "1", "-q:v", "2",
-                thumbFile.absolutePath
-            )
-            pb.redirectErrorStream(true)
-            thumbOk = pb.start().waitFor(30, TimeUnit.SECONDS) && thumbFile.exists() && thumbFile.length() > 0
-        } catch (_: Exception) { }
+                thumbFile.absolutePath),
+            thumbFile, 30
+        )
         if (!thumbOk) {
-            try {
-                thumbFile.delete()
-                val pb = ProcessBuilder(
-                    "ffmpeg", "-y", "-i", file.absolutePath,
+            thumbFile.delete()
+            thumbOk = runFfmpegWithOutput(
+                listOf("ffmpeg", "-y", "-i", file.absolutePath,
                     "-vf", "select=eq(n\\,0)", "-vframes", "1", "-q:v", "2",
-                    thumbFile.absolutePath
-                )
-                pb.redirectErrorStream(true)
-                thumbOk = pb.start().waitFor(30, TimeUnit.SECONDS) && thumbFile.exists() && thumbFile.length() > 0
-            } catch (_: Exception) { }
+                    thumbFile.absolutePath),
+                thumbFile, 30
+            )
         }
         if (thumbOk) logger.info("Thumbnail extracted: {} ({}KB)", thumbFile.name, thumbFile.length() / 1024)
 
@@ -641,6 +635,16 @@ class TelegramBotComponent(
         n >= 1_000_000 -> "%.1f MB".format(n / 1_000_000.0)
         n >= 1_000 -> "%.1f KB".format(n / 1_000.0)
         else -> "$n B"
+    }
+
+    private fun runFfmpegWithOutput(cmd: List<String>, outFile: File, timeoutSec: Int): Boolean {
+        return try {
+            val pb = ProcessBuilder(cmd)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            proc.inputStream.readAllBytes()
+            proc.waitFor(timeoutSec.toLong(), TimeUnit.SECONDS) && outFile.exists() && outFile.length() > 0
+        } catch (_: Exception) { false }
     }
 
     override suspend fun handle(msg: TelegramMsg) {
