@@ -36,7 +36,8 @@ class ActiveFile(
     val startTime: Instant,
     var bytesWritten: Long = 0,
     var segmentIndex: Int = 0,
-
+    var initBytes: ByteArray? = null,
+    var initBuf: ByteArray = byteArrayOf(),
 ) {
     fun dispose() {
         try { fos.close() } catch (_: Exception) { }
@@ -105,6 +106,24 @@ class WriterComponent(
             var data = msg.data
             hooks.forEach { data = it.beforeWrite(msg.roomId, data) }
 
+            // collect complete init segment (ftyp+moov) from first data chunks
+            val iBuf = active.initBuf
+            if (active.initBytes == null && iBuf.size < 128 * 1024) {
+                val buf = iBuf + data
+                val initEnd = findInitSegmentSize(buf)
+                if (initEnd > 0) {
+                    active.initBytes = buf.copyOfRange(0, initEnd)
+                    active.initBuf = byteArrayOf()
+                    logger.info("Captured init segment: {} bytes", initEnd)
+                } else if (buf.size >= 128 * 1024) {
+                    active.initBytes = buf // fallback full buffer
+                    active.initBuf = byteArrayOf()
+                    logger.warn("Init segment fallback at {} bytes", buf.size)
+                } else {
+                    active.initBuf = buf
+                }
+            }
+
             // write data
             withContext(Dispatchers.IO) {
                 active.fos.write(data)
@@ -146,16 +165,15 @@ class WriterComponent(
                 val newPath = partPath(active.roomName, active.startTime, segIdx)
                 val newFile = File(newPath)
                 val newEventFile = File("$newPath.event")
-                val headerLen = minOf(64 * 1024, segFile.length()).toInt()
-                val headerBytes = segFile.readBytes().copyOfRange(0, headerLen)
+                val initData = active.initBytes ?: byteArrayOf()
                 val newFos = FileOutputStream(newFile)
                 val newEventFos = FileOutputStream(newEventFile)
-                newFos.write(headerBytes)
+                newFos.write(initData)
                 active.file = newFile
                 active.eventFile = newEventFile
                 active.fos = newFos
                 active.eventFos = newEventFos
-                active.bytesWritten = headerBytes.size.toLong()
+                active.bytesWritten = initData.size.toLong()
                 logger.info("SPLIT: segIdx={}, prevLen={}MB, newFile={}", segIdx, prevLen / 1_000_000, newPath)
 
                 // remux closed segment asynchronously to normalize timestamps
@@ -306,5 +324,32 @@ class WriterComponent(
         val m = (ms % 3600_000) / 60_000
         val s = (ms % 60_000) / 1000
         return if (h > 0) "${h}h${m}m${s}s" else if (m > 0) "${m}m${s}s" else "${s}s"
+    }
+
+    private fun findInitSegmentSize(buf: ByteArray): Int {
+        var offset = 0
+        while (offset + 8 <= buf.size) {
+            val size = ((buf[offset].toInt() and 0xFF) shl 24) or
+                       ((buf[offset + 1].toInt() and 0xFF) shl 16) or
+                       ((buf[offset + 2].toInt() and 0xFF) shl 8) or
+                       (buf[offset + 3].toInt() and 0xFF)
+            val boxEnd = if (size == 1) {
+                if (offset + 16 > buf.size) return 0
+                val hi = ((buf[offset + 8].toLong() and 0xFF) shl 56) or
+                         ((buf[offset + 9].toLong() and 0xFF) shl 48) or
+                         ((buf[offset + 10].toLong() and 0xFF) shl 40) or
+                         ((buf[offset + 11].toLong() and 0xFF) shl 32) or
+                         ((buf[offset + 12].toLong() and 0xFF) shl 24) or
+                         ((buf[offset + 13].toLong() and 0xFF) shl 16) or
+                         ((buf[offset + 14].toLong() and 0xFF) shl 8) or
+                         (buf[offset + 15].toLong() and 0xFF)
+                offset + hi.toInt()
+            } else offset + size
+            if (boxEnd > buf.size) return 0
+            val type = String(buf, offset + 4, 4, Charsets.ISO_8859_1)
+            if (type == "moov") return boxEnd
+            offset = boxEnd
+        }
+        return 0
     }
 }
