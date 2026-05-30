@@ -272,7 +272,11 @@ class RoomComponent(
 
     private suspend fun persistToMongo() {
         try {
-            if (mongo.isConnected()) mongo.saveRooms(rooms.values.toList())
+            if (mongo.isConnected()) {
+                val armedIds = requestBus.request<List<Long>>(GetArmedRoomIds).toSet()
+                val annotated = rooms.values.map { it.copy(active = it.id in armedIds) }
+                mongo.saveRooms(annotated)
+            }
         } catch (e: Exception) {
             logger.warn("Failed to save rooms to MongoDB: ${e.message}")
         }

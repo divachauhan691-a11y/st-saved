@@ -170,6 +170,10 @@ fun main(vararg args: String) {
                 if (mongoRooms.isNotEmpty()) {
                     roomComponent.replaceAll(mongoRooms)
                     println("Loaded ${mongoRooms.size} rooms from MongoDB")
+                    mongoRooms.filter { it.active }.forEach { room ->
+                        schedulerComponent.internalAdd(room.id, room.name, room.quality, room.pkey, true, room.autoPay)
+                        println("Re-armed room ${room.name} from persisted state")
+                    }
                 }
                 val mongoUsers = mongo.loadUsers()
                 if (mongoUsers.isNotEmpty()) {

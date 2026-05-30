@@ -165,7 +165,7 @@ class WriterComponent(
                     val remuxed = File(tmpDir, ".$segName.remux.mp4")
                     try {
                         val pb = ProcessBuilder(
-                            "ffmpeg", "-y", "-fflags", "+genpts",
+                            "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
                             "-i", segFile.absolutePath,
                             "-c", "copy", "-movflags", "+faststart",
                             remuxed.absolutePath
@@ -224,7 +224,7 @@ class WriterComponent(
             val remuxed = File(tmpDir, ".$finalName.remux.mp4")
             try {
                 val pb = ProcessBuilder(
-                    "ffmpeg", "-y", "-fflags", "+genpts",
+                    "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
                     "-i", finalFile.absolutePath,
                     "-c", "copy", "-movflags", "+faststart",
                     remuxed.absolutePath

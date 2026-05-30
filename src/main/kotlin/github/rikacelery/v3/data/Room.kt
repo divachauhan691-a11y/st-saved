@@ -20,7 +20,8 @@ data class Room(
     val autoPay: Boolean,
     val lastSeen: String?,
     val status: String = "",
-    val pkey: String = ""
+    val pkey: String = "",
+    val active: Boolean = false
 )
 
 object DurationMillisSerializer : KSerializer<Duration> {
