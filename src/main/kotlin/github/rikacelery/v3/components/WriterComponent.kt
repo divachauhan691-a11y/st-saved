@@ -184,9 +184,9 @@ class WriterComponent(
                         var remuxOk = false
                         try {
                             val pb = ProcessBuilder(
-                                "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
+                                "ffmpeg", "-y", "-fflags", "+genpts",
                                 "-i", segFile.absolutePath,
-                                "-c", "copy", "-movflags", "+faststart",
+                                "-c", "copy", "-movflags", "+faststart", "-reset_timestamps", "1",
                                 remuxed.absolutePath
                             )
                             pb.redirectErrorStream(true)
@@ -199,7 +199,7 @@ class WriterComponent(
                             } else if (!exited) {
                                 logger.warn("Remux timed out for {}", segName)
                             } else {
-                                val errPreview = output.take(500).replace("\n", " | ")
+                                val errPreview = output.takeLast(2000).replace("\n", " | ")
                                 logger.warn("Remux failed for {} (exit={}, output={}B, err={})", segName,
                                     proc.exitValue(), remuxed.length(), errPreview)
                             }
@@ -262,9 +262,9 @@ class WriterComponent(
                 var remuxOk = false
                 try {
                     val pb = ProcessBuilder(
-                        "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
+                        "ffmpeg", "-y", "-fflags", "+genpts",
                         "-i", finalFile.absolutePath,
-                        "-c", "copy", "-movflags", "+faststart",
+                        "-c", "copy", "-movflags", "+faststart", "-reset_timestamps", "1",
                         remuxed.absolutePath
                     )
                     pb.redirectErrorStream(true)
@@ -277,7 +277,7 @@ class WriterComponent(
                     } else if (!exited) {
                         logger.warn("End remux timed out for {}", finalName)
                     } else {
-                        val errPreview = output.take(500).replace("\n", " | ")
+                        val errPreview = output.takeLast(2000).replace("\n", " | ")
                         logger.warn("End remux failed for {} (exit={}, output={}B, err={})", finalName,
                             proc.exitValue(), remuxed.length(), errPreview)
                     }
