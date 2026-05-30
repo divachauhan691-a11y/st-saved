@@ -105,7 +105,7 @@ fun main(vararg args: String) {
             val liveEventSource = LiveEventSource(config.authToken, eventBus, appScope)
 
             val downloaderComponent = DownloaderComponent(
-                dataChannel, eventBus = eventBus, parentScope = appScope, initialConcurrency = 64
+                dataChannel, eventBus = eventBus, parentScope = appScope, initialConcurrency = 8
             )
             val writerComponent = WriterComponent(
                 dataChannel, config.tmpDir,

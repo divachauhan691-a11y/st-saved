@@ -57,7 +57,7 @@ class WriterComponent(
 ) : Actor<WriterMsg>("WriterComponent", eventBus, parentScope) {
 
     private val files = ConcurrentHashMap<Long, ActiveFile>()
-    private val remuxSemaphore = Semaphore(2)
+    private val remuxSemaphore = Semaphore(1)
     private val timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss")
         .withZone(ZoneId.systemDefault())
 
@@ -108,14 +108,14 @@ class WriterComponent(
 
             // collect complete init segment (ftyp+moov) from first data chunks
             val iBuf = active.initBuf
-            if (active.initBytes == null && iBuf.size < 128 * 1024) {
+            if (active.initBytes == null && iBuf.size < 64 * 1024) {
                 val buf = iBuf + data
                 val initEnd = findInitSegmentSize(buf)
                 if (initEnd > 0) {
                     active.initBytes = buf.copyOfRange(0, initEnd)
                     active.initBuf = byteArrayOf()
                     logger.info("Captured init segment: {} bytes", initEnd)
-                } else if (buf.size >= 128 * 1024) {
+                } else if (buf.size >= 64 * 1024) {
                     active.initBytes = buf // fallback full buffer
                     active.initBuf = byteArrayOf()
                     logger.warn("Init segment fallback at {} bytes", buf.size)
