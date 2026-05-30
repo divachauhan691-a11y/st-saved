@@ -93,7 +93,10 @@ class WriterComponent(
     }
 
     private suspend fun handleStreamData(msg: StreamData) {
-        val active = files[msg.roomId] ?: return
+        val active = files[msg.roomId] ?: run {
+            logger.warn("handleStreamData: no active file for room {}", msg.roomId)
+            return
+        }
         try {
             var data = msg.data
             hooks.forEach { data = it.beforeWrite(msg.roomId, data) }
@@ -102,27 +105,42 @@ class WriterComponent(
                 active.initBytes = data.copyOf()
             }
 
-            withContext(Dispatchers.IO) {
+            // write data and get the authoritative byte position from FileChannel
+            val channelPos = withContext(Dispatchers.IO) {
                 active.fos.write(data)
+                active.fos.flush()
+                try { active.fos.channel.position() } catch (_: Exception) { -1L }
             }
+
             active.bytesWritten += data.size
 
-            // check both in-memory counter and actual file length to keep segments at ~35MB
-            val actualLen = withContext(Dispatchers.IO) {
-                try { active.file.length() } catch (_: Exception) { 0L }
+            // use channel position if available (most accurate), fall back to bytesWritten
+            val effectiveLen = if (channelPos >= 0) channelPos else active.bytesWritten
+
+            // log every 100th message or when approaching the split threshold
+            if (active.bytesWritten % 1_000_000 < data.size || effectiveLen >= segmentSize * 0.9) {
+                logger.info("bytes: written={}, channel={}, fileLen={}, dataSize={}, segIdx={}",
+                    active.bytesWritten, channelPos,
+                    try { active.file.length() } catch (_: Exception) { -1L },
+                    data.size, active.segmentIndex)
             }
-            val effectiveLen = maxOf(active.bytesWritten, actualLen)
 
             if (effectiveLen >= segmentSize && active.initBytes != null) {
+                val closeTime = Instant.now()
+                val prevFile = active.file
+                val prevLen = effectiveLen
                 active.fos.close()
                 active.eventFos.close()
 
-                val elapsed = Duration.between(active.startTime, Instant.now()).toMillis()
+                val elapsed = Duration.between(active.startTime, closeTime).toMillis()
                 active.segmentIndex++
                 val segIdx = active.segmentIndex
                 val segName = segFileName(active.roomName, active.startTime, segIdx, elapsed)
                 val segFile = File(tmpDir, segName)
-                active.file.renameTo(segFile)
+                val renamed = active.file.renameTo(segFile)
+                if (!renamed) {
+                    logger.warn("renameTo failed: {} -> {}", active.file, segFile)
+                }
 
                 val segEventFile = File(tmpDir, "$segName.event")
                 active.eventFile.renameTo(segEventFile)
@@ -139,7 +157,7 @@ class WriterComponent(
                 active.fos = newFos
                 active.eventFos = newEventFos
                 active.bytesWritten = active.initBytes!!.size.toLong()
-                logger.info("Segment {} closed ({}MB, actual={}MB), opening {}...", segIdx, active.bytesWritten / 1_000_000, actualLen / 1_000_000, newPath)
+                logger.info("SPLIT: segIdx={}, prevLen={}MB, newFile={}", segIdx, prevLen / 1_000_000, newPath)
 
                 // remux closed segment asynchronously to normalize timestamps
                 val roomId = active.roomId
@@ -159,13 +177,17 @@ class WriterComponent(
                     } catch (_: Exception) { }
                     remuxed.delete()
                     eventBus.publish(FileReady(roomId, segFile, EndReason.StreamEnd))
-                    logger.info("Segment {} remuxed + published: {} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
+                    logger.info("REPUBLISH: segIdx={}, file={} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
                 }
             }
         } catch (e: Exception) {
-            logger.error("Failed to write data for room ${msg.roomId}: ${e.message}", e)
+            logger.error("handleStreamData error for room {}: {}", msg.roomId, e.message, e)
             eventBus.publish(WriterFatal(msg.roomId, e.message ?: "Unknown error"))
-            files.remove(msg.roomId)?.dispose()
+            val removed = files.remove(msg.roomId)
+            if (removed != null) {
+                logger.warn("Removed room {} from active files due to error", msg.roomId)
+                removed.dispose()
+            }
         }
     }
 
