@@ -7,6 +7,7 @@ import github.rikacelery.v3.core.DataChannel
 import github.rikacelery.v3.core.EventBus
 import github.rikacelery.v3.core.RequestBus
 import github.rikacelery.v3.data.SystemConfig
+import github.rikacelery.v3.events.RoomStatusChanged
 import github.rikacelery.v3.hooks.EventHook
 import github.rikacelery.v3.m3u8.M3u8Parser
 import github.rikacelery.v3.storage.MongoStore
@@ -173,6 +174,7 @@ fun main(vararg args: String) {
                     mongoRooms.filter { it.active }.forEach { room ->
                         schedulerComponent.internalAdd(room.id, room.name, room.quality, room.pkey, true, room.autoPay)
                         println("Re-armed room ${room.name} from persisted state")
+                        eventBus.publish(RoomStatusChanged(room.id, "", room.status))
                     }
                 }
                 val mongoUsers = mongo.loadUsers()
