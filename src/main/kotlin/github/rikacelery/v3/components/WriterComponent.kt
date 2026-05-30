@@ -14,6 +14,7 @@ import github.rikacelery.v3.hooks.WriterHook
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -173,14 +174,18 @@ class WriterComponent(
                                 remuxed.absolutePath
                             )
                             pb.redirectErrorStream(true)
-                            val exited = pb.start().waitFor(60, TimeUnit.SECONDS)
+                            val proc = pb.start()
+                            // consume stdout to prevent pipe buffer deadlock
+                            proc.inputStream.readAllBytes()
+                            val exited = proc.waitFor(60, TimeUnit.SECONDS)
                             remuxOk = exited && remuxed.exists() && remuxed.length() > 0
                             if (remuxOk) {
                                 remuxed.renameTo(segFile)
                             } else if (!exited) {
                                 logger.warn("Remux timed out for {}", segName)
                             } else {
-                                logger.warn("Remux failed for {} (output missing or 0 bytes)", segName)
+                                logger.warn("Remux failed for {} (exit={}, output={}B)", segName,
+                                    proc.exitValue(), remuxed.length())
                             }
                         } catch (e: Exception) {
                             logger.warn("Remux exception for {}: {}", segName, e.message)
@@ -247,14 +252,17 @@ class WriterComponent(
                         remuxed.absolutePath
                     )
                     pb.redirectErrorStream(true)
-                    val exited = pb.start().waitFor(60, TimeUnit.SECONDS)
+                    val proc = pb.start()
+                    proc.inputStream.readAllBytes()
+                    val exited = proc.waitFor(60, TimeUnit.SECONDS)
                     remuxOk = exited && remuxed.exists() && remuxed.length() > 0
                     if (remuxOk) {
                         remuxed.renameTo(finalFile)
                     } else if (!exited) {
                         logger.warn("End remux timed out for {}", finalName)
                     } else {
-                        logger.warn("End remux failed for {} (output missing or 0 bytes)", finalName)
+                        logger.warn("End remux failed for {} (exit={}, output={}B)", finalName,
+                            proc.exitValue(), remuxed.length())
                     }
                 } catch (e: Exception) {
                     logger.warn("End remux exception for {}: {}", finalName, e.message)
@@ -263,7 +271,7 @@ class WriterComponent(
                 if (remuxOk) {
                     logger.info("Closed + remuxed: ${finalFile.absolutePath}, reason=${msg.reason}")
                 } else {
-                    logger.warn("Publishing un-remuxed {} (timestamps may be wrong)", finalName)
+                    logger.warn("Publishing un-remuxed {}", finalName)
                 }
                 eventBus.publish(FileReady(roomId, finalFile, msg.reason))
             }
