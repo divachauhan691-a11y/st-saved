@@ -117,8 +117,13 @@ class WriterComponent(
 
             active.bytesWritten += data.size
 
-            // use channel position if available (most accurate), fall back to bytesWritten
-            val effectiveLen = if (channelPos >= 0) channelPos else active.bytesWritten
+            // use max of all measurements for split decision
+            val fileLen = try { active.file.length() } catch (_: Exception) { 0L }
+            val effectiveLen = maxOf(
+                if (channelPos >= 0) channelPos else 0L,
+                active.bytesWritten,
+                fileLen
+            )
 
             // log every 100th message or when approaching the split threshold
             if (active.bytesWritten % 1_000_000 < data.size || effectiveLen >= segmentSize * 0.9) {
@@ -167,6 +172,7 @@ class WriterComponent(
                 scope.launch(Dispatchers.IO + NonCancellable) {
                     remuxSemaphore.withPermit {
                         val remuxed = File(tmpDir, ".$segName.remux.mp4")
+                        var remuxOk = false
                         try {
                             val pb = ProcessBuilder(
                                 "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
@@ -175,13 +181,25 @@ class WriterComponent(
                                 remuxed.absolutePath
                             )
                             pb.redirectErrorStream(true)
-                            if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                            val exited = pb.start().waitFor(60, TimeUnit.SECONDS)
+                            remuxOk = exited && remuxed.exists() && remuxed.length() > 0
+                            if (remuxOk) {
                                 remuxed.renameTo(segFile)
+                            } else if (!exited) {
+                                logger.warn("Remux timed out for {}", segName)
+                            } else {
+                                logger.warn("Remux failed for {} (output missing or 0 bytes)", segName)
                             }
-                        } catch (_: Exception) { }
+                        } catch (e: Exception) {
+                            logger.warn("Remux exception for {}: {}", segName, e.message)
+                        }
                         remuxed.delete()
+                        if (remuxOk) {
+                            logger.info("REPUBLISH: segIdx={}, file={} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
+                        } else {
+                            logger.warn("Publishing un-remuxed {} (timestamps may be wrong)", segName)
+                        }
                         eventBus.publish(FileReady(roomId, segFile, EndReason.StreamEnd))
-                        logger.info("REPUBLISH: segIdx={}, file={} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
                     }
                 }
             }
@@ -228,6 +246,7 @@ class WriterComponent(
         scope.launch(Dispatchers.IO + NonCancellable) {
             remuxSemaphore.withPermit {
                 val remuxed = File(tmpDir, ".$finalName.remux.mp4")
+                var remuxOk = false
                 try {
                     val pb = ProcessBuilder(
                         "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
@@ -236,13 +255,25 @@ class WriterComponent(
                         remuxed.absolutePath
                     )
                     pb.redirectErrorStream(true)
-                    if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                    val exited = pb.start().waitFor(60, TimeUnit.SECONDS)
+                    remuxOk = exited && remuxed.exists() && remuxed.length() > 0
+                    if (remuxOk) {
                         remuxed.renameTo(finalFile)
+                    } else if (!exited) {
+                        logger.warn("End remux timed out for {}", finalName)
+                    } else {
+                        logger.warn("End remux failed for {} (output missing or 0 bytes)", finalName)
                     }
-                } catch (_: Exception) { }
+                } catch (e: Exception) {
+                    logger.warn("End remux exception for {}: {}", finalName, e.message)
+                }
                 remuxed.delete()
+                if (remuxOk) {
+                    logger.info("Closed + remuxed: ${finalFile.absolutePath}, reason=${msg.reason}")
+                } else {
+                    logger.warn("Publishing un-remuxed {} (timestamps may be wrong)", finalName)
+                }
                 eventBus.publish(FileReady(roomId, finalFile, msg.reason))
-                logger.info("Closed + remuxed: ${finalFile.absolutePath}, reason=${msg.reason}")
             }
         }
     }
